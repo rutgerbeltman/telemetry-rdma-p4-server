@@ -16,6 +16,7 @@ libverbs RDMA_RC_example.c
 * RDMA Write
 *
 *****************************************************************************/
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -25,6 +26,9 @@ libverbs RDMA_RC_example.c
 #include <endian.h>
 #include <byteswap.h>
 #include <getopt.h>
+
+#include <sys/stat.h>
+#include <sys/mman.h>
 
 #include <sys/time.h>
 #include <arpa/inet.h>
@@ -85,6 +89,8 @@ struct resources
     char *buf;                           /* memory buffer pointer, used for RDMA and send
 ops */
     int sock;                           /* TCP socket file descriptor */
+    int fd;        /* file descriptor for buffer write*/
+    int buf_size;
 };
 struct config_t config = {
     NULL,  /* dev_name */
@@ -409,15 +415,27 @@ static int resources_create(struct resources *res)
     }
     /* allocate the memory buffer that will hold the data */
 //    size = MSG_SIZE;
-    size = 50 * 1024 ^ 3;
-    res->buf = (char *)malloc(size);
-    if (!res->buf)
-    {
-        fprintf(stderr, "failed to malloc %Zu bytes to memory buffer\n", size);
-        rc = 1;
-        goto resources_create_exit;
+//    size = 50 * 1024 ^ 3;
+//    res->buf = (char *)malloc(size);
+//    if (!res->buf)
+//    {
+//        fprintf(stderr, "failed to malloc %Zu bytes to memory buffer\n", size);
+//        rc = 1;
+//        goto resources_create_exit;
+//    }
+//    memset(res->buf, 0, size);
+    res->fd = open("/mnt/nvme/output5",O_RDWR,S_IRUSR | S_IWUSR);
+    struct stat sb;
+
+    if( fstat(res->fd,&sb) == -1 ) {
+            perror("Couldn't get file size.\n");
     }
-    memset(res->buf, 0, size);
+    size = sb.st_size;
+    res->buf_size = size;
+    printf("file size is %ld\n",sb.st_size);
+    res->buf = mmap(NULL,size,PROT_WRITE|PROT_READ,MAP_SHARED,res->fd,0);
+
+    
     /* only in the server side put the message in the memory buffer */
     if (!config.server_name)
     {
@@ -459,6 +477,11 @@ static int resources_create(struct resources *res)
 resources_create_exit:
     if (rc)
     {
+	if(res->fd) {
+            close(res->fd);
+	    res->fd = 0;
+
+	}
         /* Error encountered, cleanup */
         if (res->qp)
         {
@@ -472,7 +495,7 @@ resources_create_exit:
         }
         if (res->buf)
         {
-            free(res->buf);
+            munmap(res->buf,res->buf_size);
             res->buf = NULL;
         }
         if (res->cq)
@@ -740,6 +763,10 @@ connect_qp_exit:
 static int resources_destroy(struct resources *res)
 {
     int rc = 0;
+    if (res->fd) 
+    {
+	close(res->fd);
+    }
     if (res->qp)
         if (ibv_destroy_qp(res->qp))
         {
@@ -753,7 +780,9 @@ static int resources_destroy(struct resources *res)
             rc = 1;
         }
     if (res->buf)
-        free(res->buf);
+    {
+	munmap(res->buf,res->buf_size);
+    }
     if (res->cq)
         if (ibv_destroy_cq(res->cq))
         {
@@ -925,6 +954,8 @@ int main(int argc, char *argv[])
         fprintf(stderr, "failed to connect QPs\n");
         goto main_exit;
     }
+        fprintf(stdout, "wtf is going on");
+        fprintf(stdout, "Contents of server buffer: '%s'\n", res.buf);
     while(getchar() != 'c') {
         fprintf(stdout, "Contents of server buffer: '%s'\n", res.buf);
     }
