@@ -265,6 +265,70 @@ static int post_receive(struct resources *res)
         fprintf(stdout, "Receive Request was posted\n");
     return rc;
 }
+/* poll_completion */
+/******************************************************************************
+* Function: poll_completion
+*
+* Input
+* res pointer to resources structure
+*
+* Output
+* none
+*
+* Returns
+* none
+*
+* Returns
+* 0 on success, 1 on failure
+*
+* Description
+* Poll the completion queue for a single event. This function will continue to
+* poll the queue until MAX_POLL_CQ_TIMEOUT milliseconds have passed.
+*
+******************************************************************************/
+static int poll_completion(struct resources *res)
+{
+        struct ibv_wc wc;
+        unsigned long start_time_msec;
+        unsigned long cur_time_msec;
+        struct timeval cur_time;
+        int poll_result;
+        int rc = 0;
+        /* poll the completion for a while before giving up of doing it .. */
+        gettimeofday(&cur_time, NULL);
+        start_time_msec = (cur_time.tv_sec * 1000) + (cur_time.tv_usec / 1000);
+        do
+        {
+                poll_result = ibv_poll_cq(res->cq, 1, &wc);
+                gettimeofday(&cur_time, NULL);
+                cur_time_msec = (cur_time.tv_sec * 1000) + (cur_time.tv_usec / 1000);
+        } while ((poll_result == 0) && ((cur_time_msec - start_time_msec) < MAX_POLL_CQ_TIMEOUT));
+        if (poll_result < 0)
+        {
+                /* poll CQ failed */
+                fprintf(stderr, "poll CQ failed\n");
+                rc = 1;
+        }
+        else if (poll_result == 0)
+        { /* the CQ is empty */
+                fprintf(stderr, "completion wasn't found in the CQ after timeout\n");
+                rc = 1;
+        }
+        else
+        {
+                /* CQE found */
+                fprintf(stdout, "completion was found in CQ with status 0x%x, immediate data 0x%x\n", wc.status,wc.imm_data);
+                /* check the completion status (here we don't care about the completion opcode */
+                if (wc.status != IBV_WC_SUCCESS)
+                {
+                        fprintf(stderr, "got bad completion with status: 0x%x, vendor syndrome: 0x%x\n", wc.status,
+                                        wc.vendor_err);
+                        rc = 1;
+                }
+        }
+        return rc;
+}
+
 /******************************************************************************
 * Function: resources_init
 *
@@ -424,8 +488,9 @@ static int resources_create(struct resources *res)
 //        goto resources_create_exit;
 //    }
 //    memset(res->buf, 0, size);
-    res->fd = open("/mnt/nvme/output5",O_RDWR,S_IRUSR | S_IWUSR);
+    res->fd = open("/mnt/nvme/output-large",O_RDWR,S_IRUSR | S_IWUSR);
     struct stat sb;
+    printf("%d",res->fd);
 
     if( fstat(res->fd,&sb) == -1 ) {
             perror("Couldn't get file size.\n");
@@ -434,19 +499,23 @@ static int resources_create(struct resources *res)
     res->buf_size = size;
     printf("file size is %ld\n",sb.st_size);
     res->buf = mmap(NULL,size,PROT_WRITE|PROT_READ,MAP_SHARED,res->fd,0);
+    printf("finished mmap %p\n",res->buf);
 
     
     /* only in the server side put the message in the memory buffer */
-    if (!config.server_name)
-    {
-        strcpy(res->buf, MSG);
-        fprintf(stdout, "going to send the message: '%s'\n", res->buf);
-    }
-    else
-        memset(res->buf, 0, size);
+ //   if (!config.server_name)
+ //   {
+ //   //    strcpy(res->buf, MSG);
+ //       fprintf(stdout, "going to send the message: '%s'\n", res->buf);
+//    }
+//    else
+//        memset(res->buf, 0, size);
     /* register the memory buffer */
+    printf("before mr_flags\n");
     mr_flags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE;
+    printf("before ibv_reg_mr()\n");
     res->mr = ibv_reg_mr(res->pd, res->buf, size, mr_flags);
+    printf("finished ibv_reg_mr()\n");
     if (!res->mr)
     {
         fprintf(stderr, "ibv_reg_mr failed with mr_flags=0x%x\n", mr_flags);
@@ -943,20 +1012,24 @@ int main(int argc, char *argv[])
     /* init all of the resources, so cleanup will be easy */
     resources_init(&res);
     /* create resources before using them */
+    printf("Hi1\n");
     if (resources_create(&res))
     {
         fprintf(stderr, "failed to create resources\n");
         goto main_exit;
     }
+    printf("Hi2\n");
     /* connect the QPs */
     if (connect_qp(&res))
     {
         fprintf(stderr, "failed to connect QPs\n");
         goto main_exit;
     }
+    printf("Hi3\n");
         fprintf(stdout, "wtf is going on");
         fprintf(stdout, "Contents of server buffer: '%s'\n", res.buf);
     while(getchar() != 'c') {
+	poll_completion(&res);
         fprintf(stdout, "Contents of server buffer: '%s'\n", res.buf);
     }
 
